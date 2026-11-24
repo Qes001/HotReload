@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+﻿// SPDX-License-Identifier: GPL-3.0-only
 // HotReload - Koikatu runtime zipmod hot reload
 // Copyright (C) 2026 As-sin
 //
@@ -11,9 +11,9 @@ using UnityEngine;
 namespace HotReload.Payload
 {
     /// <summary>
-    /// 界面与按键。Ctrl+F7 开关窗口。
+    /// 界面与按键。Ctrl+F7 开关窗口（固定）。
     /// 属于"可丢弃"部分，payload 重载时整个重建。
-    /// 布局：自绘标题栏 + 大块日志区 + 底部操作行。
+    /// 布局：自绘标题栏 + 大块日志区 + 底部操作行；「设置」页里可以自己绑快捷键。
     /// </summary>
     internal class PayloadBehaviour : MonoBehaviour
     {
@@ -34,6 +34,12 @@ namespace HotReload.Payload
         Vector2 _scroll;
         int _lastLogCount;
 
+        // 0 = 主界面，1 = 快捷键设置
+        int _page;
+        bool _capturing;
+        HotkeyAction _captureTarget;
+        Vector2 _settingsScroll;
+
         GUIStyle _windowStyle, _titleStyle, _labelStyle, _hintStyle, _boxStyle, _smallStyle, _buttonStyle, _fieldStyle,
             _toggleStyle;
         Texture2D _texWindow, _texBox, _texButton, _texButtonHover, _texButtonActive, _texField;
@@ -49,13 +55,14 @@ namespace HotReload.Payload
             // Sideloader 可能比本插件晚加载，这里持续重试桥接
             ContentHotReload.Tick();
 
-            if (Input.GetKey(KeyCode.LeftControl) && Input.GetKeyDown(KeyCode.F7))
+            if (HotkeyConfig.ToggleWindow.IsDown())
             {
                 _visible = !_visible;
                 _guiErrorReported = false;
                 if (!_visible)
                 {
                     _dragging = false;
+                    _capturing = false;
                     InputBlock.Clear();
                 }
             }
@@ -66,13 +73,40 @@ namespace HotReload.Payload
 
             if (!_visible) return;
 
-            // 键盘兜底（文本框获得焦点时不抢键）：Enter 释放，Ctrl+Enter 重载
-            if (GUIUtility.keyboardControl == 0 && Input.GetKeyDown(KeyCode.Return))
+            // 录键中或正在文本框输入时不抢键
+            if (_capturing) return;
+            if (GUIUtility.keyboardControl != 0) return;
+
+            HandleHotkeys();
+        }
+
+        /// <summary>用户自己绑的快捷键（默认都没绑，所以默认不会有任何动作）。</summary>
+        void HandleHotkeys()
+        {
+            if (HotkeyConfig.Get(HotkeyAction.Release).IsDown())
             {
-                if (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl))
-                    ContentHotReload.Reload();
-                else if (!string.IsNullOrEmpty(_guidText))
-                    ContentHotReload.Release(_guidText);
+                ContentHotReload.Release(_guidText);
+                return;
+            }
+            if (HotkeyConfig.Get(HotkeyAction.Reload).IsDown())
+            {
+                ContentHotReload.Reload();
+                return;
+            }
+            if (HotkeyConfig.Get(HotkeyAction.Rescan).IsDown())
+            {
+                ContentHotReload.Rescan();
+                return;
+            }
+            if (HotkeyConfig.Get(HotkeyAction.ClearLog).IsDown())
+            {
+                ContentHotReload.ClearLog();
+                _lastLogCount = 0;
+                return;
+            }
+            if (HotkeyConfig.Get(HotkeyAction.ExportLog).IsDown())
+            {
+                ContentHotReload.ExportLog();
             }
         }
 
@@ -80,9 +114,17 @@ namespace HotReload.Payload
         {
             if (!_visible) return;
 
+            var ev = Event.current;
+
+            // 录键：拿 IMGUI 的 KeyDown 事件，能带上 Ctrl/Alt/Shift 状态
+            if (_capturing && ev != null && ev.type == EventType.KeyDown)
+            {
+                CaptureKey(ev);
+                return;
+            }
+
             // 用 IMGUI 事件里的真实鼠标位置喂给 InputBlock，
             // 否则 mousePosition 被冻结后就没法判断鼠标什么时候离开窗口
-            var ev = Event.current;
             if (ev != null && ev.type != EventType.Used)
                 InputBlock.RawMouse = new Vector3(ev.mousePosition.x, Screen.height - ev.mousePosition.y, 0f);
 
@@ -109,11 +151,26 @@ namespace HotReload.Payload
             }
         }
 
+        void CaptureKey(Event ev)
+        {
+            ev.Use();
+
+            if (ev.keyCode == KeyCode.Escape)
+            {
+                _capturing = false;
+                return;
+            }
+            if (Hotkey.IsModifierKey(ev.keyCode)) return;   // 只按修饰键不算
+
+            HotkeyConfig.Set(_captureTarget, new Hotkey(ev.keyCode, ev.control, ev.alt, ev.shift));
+            _capturing = false;
+        }
+
         void DrawWindow(int id)
         {
             // ---------- 标题栏 ----------
             var titleRect = new Rect(1f, 1f, _rect.width - 2f, TitleHeight);
-            GUI.Label(titleRect, "HotReload  热重载  <size=10><color=#9aa0a6>v1.2.2 by Qes001</color></size>", _titleStyle);
+            GUI.Label(titleRect, "HotReload  热重载  <size=10><color=#9aa0a6>v1.2.3 by Qes001</color></size>", _titleStyle);
 
             if (GUI.Button(new Rect(_rect.width - 50f, 4f, 20f, 18f), _collapsed ? "+" : "-", _smallStyle))
             {
@@ -125,6 +182,7 @@ namespace HotReload.Payload
             {
                 _visible = false;
                 _dragging = false;
+                _capturing = false;
                 InputBlock.Clear();
                 return;
             }
@@ -146,60 +204,148 @@ namespace HotReload.Payload
 
                 GUILayout.BeginArea(new Rect(Pad, bodyTop, _rect.width - Pad * 2f, bodyHeight));
 
-                // 日志区
-                GUILayout.BeginVertical(_boxStyle, GUILayout.ExpandHeight(true));
-                _scroll = GUILayout.BeginScrollView(_scroll);
-                var logs = ContentHotReload.Logs;
-                for (int i = 0; i < logs.Count; i++)
-                    GUILayout.Label(logs[i], _labelStyle);
-                GUILayout.EndScrollView();
-                GUILayout.EndVertical();
+                if (_page == 1)
+                {
+                    GUILayout.BeginVertical(_boxStyle, GUILayout.ExpandHeight(true));
+                    _settingsScroll = GUILayout.BeginScrollView(_settingsScroll);
+                    DrawSettings();
+                    GUILayout.EndScrollView();
+                    GUILayout.EndVertical();
+                }
+                else
+                {
+                    // 日志区
+                    GUILayout.BeginVertical(_boxStyle, GUILayout.ExpandHeight(true));
+                    _scroll = GUILayout.BeginScrollView(_scroll);
+                    var logs = ContentHotReload.Logs;
+                    for (int i = 0; i < logs.Count; i++)
+                        GUILayout.Label(logs[i], _labelStyle);
+                    GUILayout.EndScrollView();
+                    GUILayout.EndVertical();
 
-                // 内容包
-                GUILayout.Space(4f);
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("内容包", _hintStyle, GUILayout.Width(56f));
-                _guidText = GUILayout.TextField(_guidText == null ? "" : _guidText, _fieldStyle,
-                    GUILayout.Height(22f), GUILayout.ExpandWidth(true));
-                GUILayout.EndHorizontal();
+                    // 内容包
+                    GUILayout.Space(4f);
+                    GUILayout.BeginHorizontal();
+                    GUILayout.Label("内容包", _hintStyle, GUILayout.Width(56f));
+                    _guidText = GUILayout.TextField(_guidText == null ? "" : _guidText, _fieldStyle,
+                        GUILayout.Height(22f), GUILayout.ExpandWidth(true));
+                    GUILayout.EndHorizontal();
 
-                // 选项：默认只重载 unity3d
-                GUILayout.Space(2f);
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("选项", _hintStyle, GUILayout.Width(56f));
-                ContentHotReload.SetReloadLists(GUILayout.Toggle(ContentHotReload.ReloadLists,
-                    " 表格/manifest", _toggleStyle, GUILayout.Height(20f)));
-                GUILayout.EndHorizontal();
+                    // 选项：默认只重载 unity3d
+                    GUILayout.Space(2f);
+                    GUILayout.BeginHorizontal();
+                    GUILayout.Label("选项", _hintStyle, GUILayout.Width(56f));
+                    ContentHotReload.SetReloadLists(GUILayout.Toggle(ContentHotReload.ReloadLists,
+                        " 表格/manifest", _toggleStyle, GUILayout.Height(20f)));
+                    GUILayout.EndHorizontal();
+                }
 
                 // 操作
                 GUILayout.Space(4f);
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("操作", _hintStyle, GUILayout.Width(56f));
                 GUILayout.FlexibleSpace();
-                if (GUILayout.Button("检索", _buttonStyle, GUILayout.Width(58f), GUILayout.Height(26f)))
-                    ContentHotReload.Rescan();
-                if (GUILayout.Button("释放", _buttonStyle, GUILayout.Width(58f), GUILayout.Height(26f)))
-                    ContentHotReload.Release(_guidText);
-                if (GUILayout.Button("重载", _buttonStyle, GUILayout.Width(58f), GUILayout.Height(26f)))
-                    ContentHotReload.Reload();
-                if (GUILayout.Button("清空", _buttonStyle, GUILayout.Width(58f), GUILayout.Height(26f)))
+
+                if (_page == 1)
                 {
-                    ContentHotReload.ClearLog();
-                    _lastLogCount = 0;
+                    if (GUILayout.Button("返回", _buttonStyle, GUILayout.Width(56f), GUILayout.Height(26f)))
+                    {
+                        _page = 0;
+                        _capturing = false;
+                    }
                 }
-                if (GUILayout.Button("导出", _buttonStyle, GUILayout.Width(58f), GUILayout.Height(26f)))
-                    ContentHotReload.ExportLog();
+                else
+                {
+                    if (GUILayout.Button("释放", _buttonStyle, GUILayout.Width(56f), GUILayout.Height(26f)))
+                        ContentHotReload.Release(_guidText);
+                    if (GUILayout.Button("重载", _buttonStyle, GUILayout.Width(56f), GUILayout.Height(26f)))
+                        ContentHotReload.Reload();
+                    if (GUILayout.Button("检索", _buttonStyle, GUILayout.Width(56f), GUILayout.Height(26f)))
+                        ContentHotReload.Rescan();
+                    if (GUILayout.Button("清空", _buttonStyle, GUILayout.Width(56f), GUILayout.Height(26f)))
+                    {
+                        ContentHotReload.ClearLog();
+                        _lastLogCount = 0;
+                    }
+                    if (GUILayout.Button("导出", _buttonStyle, GUILayout.Width(56f), GUILayout.Height(26f)))
+                        ContentHotReload.ExportLog();
+                    if (GUILayout.Button("设置", _buttonStyle, GUILayout.Width(56f), GUILayout.Height(26f)))
+                    {
+                        _page = 1;
+                        _capturing = false;
+                    }
+                }
+
                 GUILayout.EndHorizontal();
 
                 GUILayout.EndArea();
             }
 
             // 日志自动滚到底
-            if (ContentHotReload.LogCount != _lastLogCount)
+            if (_page == 0 && ContentHotReload.LogCount != _lastLogCount)
             {
                 _lastLogCount = ContentHotReload.LogCount;
                 _scroll.y = float.MaxValue;
             }
+        }
+
+        void DrawSettings()
+        {
+            GUILayout.Label("点「改键」后按想要的组合键（Esc 取消）。快捷键只在窗口打开时生效。", _labelStyle);
+            GUILayout.Space(6f);
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("开关窗口", _hintStyle, GUILayout.Width(72f));
+            GUILayout.Label(HotkeyConfig.ToggleWindowText + "（固定）", _labelStyle, GUILayout.ExpandWidth(true));
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("payload 重载", _hintStyle, GUILayout.Width(72f));
+            GUILayout.Label(HotkeyConfig.PayloadReloadText + "（固定）", _labelStyle, GUILayout.ExpandWidth(true));
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(6f);
+            GUILayout.Label("以下默认都未设置，按自己习惯绑定：", _labelStyle);
+            GUILayout.Space(4f);
+
+            var actions = HotkeyConfig.Editable;
+            for (int i = 0; i < actions.Length; i++)
+            {
+                var action = actions[i];
+                var hk = HotkeyConfig.Get(action);
+                bool capturingThis = _capturing && _captureTarget == action;
+
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(HotkeyConfig.Name(action), _hintStyle, GUILayout.Width(72f));
+
+                var text = capturingThis ? "按下组合键…" : hk.Describe();
+                GUILayout.Label(text, _labelStyle, GUILayout.ExpandWidth(true));
+
+                if (GUILayout.Button(capturingThis ? "取消" : "改键", _buttonStyle,
+                    GUILayout.Width(50f), GUILayout.Height(22f)))
+                {
+                    if (capturingThis)
+                    {
+                        _capturing = false;
+                    }
+                    else
+                    {
+                        _capturing = true;
+                        _captureTarget = action;
+                    }
+                }
+
+                if (GUILayout.Button("清除", _buttonStyle, GUILayout.Width(50f), GUILayout.Height(22f)))
+                {
+                    HotkeyConfig.Clear(action);
+                    if (capturingThis) _capturing = false;
+                }
+
+                GUILayout.EndHorizontal();
+            }
+
+            GUILayout.Space(8f);
+            GUILayout.Label("配置写在 BepInEx/hotreload/hotkeys.txt，删掉该文件即恢复全空。", _labelStyle);
         }
 
         void EnsureStyle()
