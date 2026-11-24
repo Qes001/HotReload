@@ -30,8 +30,14 @@ namespace HotReload.Boot
 
         const string PayloadTypeName = "HotReload.Payload.Entry";
 
-        ConfigEntry<KeyboardShortcut> _reloadKey;
         ConfigEntry<bool> _autoReload;
+
+        // payload 重载键跟 payload 共用 hotkeys.txt（默认 Ctrl+F10，可在界面里改）
+        KeyCode _reloadKeyCode = KeyCode.F10;
+        bool _reloadCtrl = true;
+        bool _reloadAlt;
+        bool _reloadShift;
+        DateTime _hotkeyStamp = DateTime.MinValue;
 
         string _payloadPath;
         DateTime _lastWriteUtc;
@@ -42,8 +48,6 @@ namespace HotReload.Boot
 
         void Awake()
         {
-            _reloadKey = Config.Bind("General", "ReloadKey", new KeyboardShortcut(KeyCode.F10, KeyCode.LeftControl),
-                "重新读取 payload 的快捷键（和 payload 内部的热重载键分开）");
             _autoReload = Config.Bind("General", "AutoReload", true,
                 "payload dll 一有变化就自动重载");
 
@@ -51,11 +55,14 @@ namespace HotReload.Boot
             Logger.LogInfo("payload 路径: " + _payloadPath);
 
             Reload();
+            RefreshReloadHotkey();
         }
 
         void Update()
         {
-            if (_reloadKey.Value.IsDown())
+            RefreshReloadHotkey();
+
+            if (ReloadHotkeyDown())
             {
                 Reload();
                 return;
@@ -74,6 +81,88 @@ namespace HotReload.Boot
             catch (IOException)
             {
             }
+        }
+
+        /// <summary>
+        /// 从 hotkeys.txt 读 payloadreload（payload 的界面会写这个文件）。
+        /// 只在文件变化时才重新解析，避免每帧读盘。
+        /// </summary>
+        void RefreshReloadHotkey()
+        {
+            try
+            {
+                var path = Path.Combine(Path.Combine(Paths.BepInExRootPath, "hotreload"), "hotkeys.txt");
+                if (!File.Exists(path)) return;
+
+                var stamp = File.GetLastWriteTimeUtc(path);
+                if (stamp == _hotkeyStamp) return;
+                _hotkeyStamp = stamp;
+
+                var lines = File.ReadAllLines(path);
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    int eq = lines[i].IndexOf('=');
+                    if (eq <= 0) continue;
+
+                    var name = lines[i].Substring(0, eq).Trim();
+                    if (!name.Equals("payloadreload", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    ApplyReloadHotkey(lines[i].Substring(eq + 1).Trim());
+                    return;
+                }
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        void ApplyReloadHotkey(string value)
+        {
+            var key = KeyCode.None;
+            bool ctrl = false, alt = false, shift = false;
+
+            var parts = value.Split('+');
+            for (int i = 0; i < parts.Length; i++)
+            {
+                var part = parts[i].Trim();
+                if (part.Length == 0) continue;
+
+                if (part.Equals("ctrl", StringComparison.OrdinalIgnoreCase) ||
+                    part.Equals("control", StringComparison.OrdinalIgnoreCase))
+                {
+                    ctrl = true;
+                    continue;
+                }
+                if (part.Equals("alt", StringComparison.OrdinalIgnoreCase)) { alt = true; continue; }
+                if (part.Equals("shift", StringComparison.OrdinalIgnoreCase)) { shift = true; continue; }
+
+                try { key = (KeyCode)Enum.Parse(typeof(KeyCode), part, true); }
+                catch (Exception) { }
+            }
+
+            if (key == KeyCode.None && !ctrl && !alt && !shift)
+            {
+                // 空值 = 回到默认
+                key = KeyCode.F10;
+                ctrl = true;
+            }
+
+            _reloadKeyCode = key;
+            _reloadCtrl = ctrl;
+            _reloadAlt = alt;
+            _reloadShift = shift;
+        }
+
+        bool ReloadHotkeyDown()
+        {
+            if (_reloadKeyCode == KeyCode.None) return false;
+            if (!Input.GetKeyDown(_reloadKeyCode)) return false;
+
+            bool ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+            bool alt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
+            bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+
+            return ctrl == _reloadCtrl && alt == _reloadAlt && shift == _reloadShift;
         }
 
         void Reload()

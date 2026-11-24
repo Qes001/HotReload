@@ -1,5 +1,5 @@
 ﻿// SPDX-License-Identifier: GPL-3.0-only
-// HotReload - Koikatu runtime zipmod hot reload
+// HotReload - Koikatsu / Koikatsu Sunshine runtime zipmod hot reload
 // Copyright (C) 2026 As-sin
 //
 // This program is free software: you can redistribute it and/or modify
@@ -55,7 +55,7 @@ namespace HotReload.Payload
             // Sideloader 可能比本插件晚加载，这里持续重试桥接
             ContentHotReload.Tick();
 
-            if (HotkeyConfig.ToggleWindow.IsDown())
+            if (HotkeyConfig.Get(HotkeyAction.ToggleWindow).IsDown())
             {
                 _visible = !_visible;
                 _guiErrorReported = false;
@@ -291,34 +291,30 @@ namespace HotReload.Payload
 
         void DrawSettings()
         {
-            GUILayout.Label("点「改键」后按想要的组合键（Esc 取消）。快捷键只在窗口打开时生效。", _labelStyle);
-            GUILayout.Space(6f);
-
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("开关窗口", _hintStyle, GUILayout.Width(72f));
-            GUILayout.Label(HotkeyConfig.ToggleWindowText + "（固定）", _labelStyle, GUILayout.ExpandWidth(true));
-            GUILayout.EndHorizontal();
-
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("payload 重载", _hintStyle, GUILayout.Width(72f));
-            GUILayout.Label(HotkeyConfig.PayloadReloadText + "（固定）", _labelStyle, GUILayout.ExpandWidth(true));
-            GUILayout.EndHorizontal();
-
-            GUILayout.Space(6f);
-            GUILayout.Label("以下默认都未设置，按自己习惯绑定：", _labelStyle);
+            GUILayout.Label("点「改键」后按想要的组合键（Esc 取消），「默认/清除」恢复初始状态。快捷键只在窗口打开时生效。", _labelStyle);
             GUILayout.Space(4f);
+            GUILayout.Label("开关窗口 / payload 重载 出厂就带默认键，其余默认不绑定，都可自行修改。", _labelStyle);
+            GUILayout.Space(6f);
 
-            var actions = HotkeyConfig.Editable;
+            var actions = HotkeyConfig.All;
             for (int i = 0; i < actions.Length; i++)
             {
                 var action = actions[i];
                 var hk = HotkeyConfig.Get(action);
                 bool capturingThis = _capturing && _captureTarget == action;
+                var def = HotkeyConfig.Default(action);
 
                 GUILayout.BeginHorizontal();
-                GUILayout.Label(HotkeyConfig.Name(action), _hintStyle, GUILayout.Width(72f));
+                GUILayout.Label(HotkeyConfig.Name(action), _hintStyle, GUILayout.Width(84f));
 
-                var text = capturingThis ? "按下组合键…" : hk.Describe();
+                string text;
+                if (capturingThis) text = "按下组合键…";
+                else if (hk.IsSet) text = hk.Describe();
+                else text = "未设置";
+
+                if (!capturingThis && def.IsSet && hk.SameAs(def))
+                    text += "（默认）";
+
                 GUILayout.Label(text, _labelStyle, GUILayout.ExpandWidth(true));
 
                 if (GUILayout.Button(capturingThis ? "取消" : "改键", _buttonStyle,
@@ -335,9 +331,10 @@ namespace HotReload.Payload
                     }
                 }
 
-                if (GUILayout.Button("清除", _buttonStyle, GUILayout.Width(50f), GUILayout.Height(22f)))
+                if (GUILayout.Button(def.IsSet ? "默认" : "清除", _buttonStyle,
+                    GUILayout.Width(50f), GUILayout.Height(22f)))
                 {
-                    HotkeyConfig.Clear(action);
+                    HotkeyConfig.Reset(action);
                     if (capturingThis) _capturing = false;
                 }
 
@@ -345,7 +342,7 @@ namespace HotReload.Payload
             }
 
             GUILayout.Space(8f);
-            GUILayout.Label("配置写在 BepInEx/hotreload/hotkeys.txt，删掉该文件即恢复全空。", _labelStyle);
+            GUILayout.Label("配置写在 BepInEx/hotreload/hotkeys.txt，删掉该文件即恢复初始状态。", _labelStyle);
         }
 
         void EnsureStyle()

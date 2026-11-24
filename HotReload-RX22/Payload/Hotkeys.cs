@@ -13,10 +13,12 @@ using UnityEngine;
 
 namespace HotReload.Payload
 {
-    /// <summary>可以自己绑键的动作（默认全部不绑定）。</summary>
+    /// <summary>可以绑键的动作。</summary>
     internal enum HotkeyAction
     {
-        Release = 0,
+        ToggleWindow = 0,
+        PayloadReload,
+        Release,
         Reload,
         Rescan,
         ClearLog,
@@ -42,6 +44,11 @@ namespace HotReload.Payload
         }
 
         public bool IsSet { get { return Key != KeyCode.None; } }
+
+        public bool SameAs(Hotkey other)
+        {
+            return Key == other.Key && Ctrl == other.Ctrl && Alt == other.Alt && Shift == other.Shift;
+        }
 
         /// <summary>这一帧是否刚按下（修饰键必须完全一致，避免 Ctrl+F5 被 F5 触发）。</summary>
         public bool IsDown()
@@ -145,18 +152,15 @@ namespace HotReload.Payload
     }
 
     /// <summary>
-    /// 快捷键配置。只有窗口开关（Ctrl+F7）和 payload 重载（Ctrl+F10）是固定的，
-    /// 其余动作默认不绑定，存在 BepInEx/hotreload/hotkeys.txt。
+    /// 快捷键配置。开关窗口（Ctrl+F7）和 payload 重载（Ctrl+F10）只是默认值，同样可以改；
+    /// 其余动作默认不绑定。配置存在 BepInEx/hotreload/hotkeys.txt。
     /// </summary>
     internal static class HotkeyConfig
     {
-        /// <summary>固定的两个：壳与本插件自己实现，不允许改。</summary>
-        public static readonly Hotkey ToggleWindow = new Hotkey(KeyCode.F7, true, false, false);
-        public const string ToggleWindowText = "Ctrl+F7";
-        public const string PayloadReloadText = "Ctrl+F10";
-
-        public static readonly HotkeyAction[] Editable =
+        public static readonly HotkeyAction[] All =
         {
+            HotkeyAction.ToggleWindow,
+            HotkeyAction.PayloadReload,
             HotkeyAction.Release,
             HotkeyAction.Reload,
             HotkeyAction.Rescan,
@@ -167,10 +171,28 @@ namespace HotReload.Payload
         static readonly Dictionary<HotkeyAction, Hotkey> _map = new Dictionary<HotkeyAction, Hotkey>();
         static bool _loaded;
 
+        /// <summary>出厂默认：只有开关窗口和 payload 重载带键。</summary>
+        public static Hotkey Default(HotkeyAction action)
+        {
+            switch (action)
+            {
+                case HotkeyAction.ToggleWindow: return new Hotkey(KeyCode.F7, true, false, false);
+                case HotkeyAction.PayloadReload: return new Hotkey(KeyCode.F10, true, false, false);
+                default: return Hotkey.None;
+            }
+        }
+
+        public static bool HasDefault(HotkeyAction action)
+        {
+            return Default(action).IsSet;
+        }
+
         public static string Name(HotkeyAction action)
         {
             switch (action)
             {
+                case HotkeyAction.ToggleWindow: return "开关窗口";
+                case HotkeyAction.PayloadReload: return "payload 重载";
                 case HotkeyAction.Release: return "释放";
                 case HotkeyAction.Reload: return "重载";
                 case HotkeyAction.Rescan: return "检索";
@@ -180,10 +202,13 @@ namespace HotReload.Payload
             }
         }
 
+        /// <summary>配置文件里的键名（payload 重载这一项壳也会读）。</summary>
         public static string KeyName(HotkeyAction action)
         {
             switch (action)
             {
+                case HotkeyAction.ToggleWindow: return "window";
+                case HotkeyAction.PayloadReload: return "payloadreload";
                 case HotkeyAction.Release: return "release";
                 case HotkeyAction.Reload: return "reload";
                 case HotkeyAction.Rescan: return "rescan";
@@ -221,14 +246,13 @@ namespace HotReload.Payload
 
                     var key = line.Substring(0, eq).Trim();
                     var value = line.Substring(eq + 1).Trim();
-                    if (value.Length == 0) continue;
 
-                    for (int k = 0; k < Editable.Length; k++)
+                    for (int k = 0; k < All.Length; k++)
                     {
-                        if (!KeyName(Editable[k]).Equals(key, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (!KeyName(All[k]).Equals(key, StringComparison.OrdinalIgnoreCase)) continue;
 
                         var hk = Hotkey.Parse(value);
-                        if (hk.IsSet) _map[Editable[k]] = hk;
+                        if (hk.IsSet) _map[All[k]] = hk;
                         break;
                     }
                 }
@@ -243,7 +267,14 @@ namespace HotReload.Payload
             EnsureLoaded();
 
             Hotkey hk;
-            return _map.TryGetValue(action, out hk) ? hk : Hotkey.None;
+            if (_map.TryGetValue(action, out hk)) return hk;
+            return Default(action);
+        }
+
+        public static bool IsCustomized(HotkeyAction action)
+        {
+            EnsureLoaded();
+            return _map.ContainsKey(action);
         }
 
         public static void Set(HotkeyAction action, Hotkey hotkey)
@@ -256,9 +287,12 @@ namespace HotReload.Payload
             Save();
         }
 
-        public static void Clear(HotkeyAction action)
+        /// <summary>清空（有默认值的会回到默认）。</summary>
+        public static void Reset(HotkeyAction action)
         {
-            Set(action, Hotkey.None);
+            EnsureLoaded();
+            _map.Remove(action);
+            Save();
         }
 
         static void Save()
@@ -272,11 +306,11 @@ namespace HotReload.Payload
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
                 var sb = new StringBuilder();
-                sb.AppendLine("# HotReload 快捷键（留空 = 不绑定）");
-                for (int i = 0; i < Editable.Length; i++)
+                sb.AppendLine("# HotReload 快捷键（window / payloadreload 有默认值，其余留空 = 不绑定）");
+                for (int i = 0; i < All.Length; i++)
                 {
-                    var hk = Get(Editable[i]);
-                    sb.Append(KeyName(Editable[i])).Append('=').Append(hk.Serialize()).AppendLine();
+                    var hk = Get(All[i]);
+                    sb.Append(KeyName(All[i])).Append('=').Append(hk.Serialize()).AppendLine();
                 }
 
                 File.WriteAllText(path, sb.ToString());
