@@ -113,7 +113,7 @@ namespace HotReload.Payload
         {
             // ---------- 标题栏 ----------
             var titleRect = new Rect(1f, 1f, _rect.width - 2f, TitleHeight);
-            GUI.Label(titleRect, "HotReload  热重载  <size=10><color=#9aa0a6>v1.2.1 by As-sin</color></size>", _titleStyle);
+            GUI.Label(titleRect, "HotReload  热重载  <size=10><color=#9aa0a6>v1.2.1 by Qes001</color></size>", _titleStyle);
 
             if (GUI.Button(new Rect(_rect.width - 50f, 4f, 20f, 18f), _collapsed ? "+" : "-", _smallStyle))
             {

@@ -14,12 +14,13 @@
 
 | 项目 | 目标 |
 | --- | --- |
-| `HotReload-Madevil` | Madevil / 经典 BepisPlugins（KK 18.x，`Archives`） |
-| `HotReload-HFPatch` | HF Patch / RX22（2024+，`Zipmods`） |
+| `HotReload-Madevil` | Koikatu · Madevil / 经典 BepisPlugins（Sideloader 18.x，`Archives`） |
+| `HotReload-RX22` | Koikatu · HF Patch / RX22（Sideloader 20.x，`Zipmods`） |
+| `HotReload-KKS` | Koikatsu Sunshine · Sideloader 19.6 / 20.0（`Zipmods`），两个安装通用 |
 
 反射适配，不编译依赖 `Sideloader.dll`。
 
-> **仅适用于 Koikatu（KK）。** KoikatuSunshine（KKS）无法使用：两作的部件类、刷新接口与 Sideloader 注册表结构不同，本插件不会正常工作。
+> **KK 与 KKS 不能混用。** KKS 是 Unity 2019 的模块化程序集，`ChangeClothes / ChangeAccessory` 签名是 `(forceChange, update)`，Maker / Studio 单例走 `Singleton<T>.Instance`，因此单独出了一份 KKS payload；`HotReload-KKS` 已同时适配 Sideloader 19.6 与 20.0。
 
 ---
 
@@ -62,7 +63,7 @@ BepInEx/
 - **重载**：解析校验 → 把 bundle 抽到 `BepInEx/hotreload/bundle-cache` → 提交注册；失败则保留旧状态（`kept previous state`）
 - 加载器指向缓存文件，Unity 不再锁 zipmod，源文件随时可覆盖
 - 缓存按内容哈希，自动清理：超 **1 GB** 或 **15 天**未使用
-- 刷新：`ChangeClothes / ChangeAccessory / ChangeHair(true)`，并保护 MaterialEditor 材质数据
+- 刷新：`ChangeClothes / ChangeAccessory / ChangeHair(true)`（KKS 为 `(forceChange, update)`），并保护 MaterialEditor 材质数据
 
 ---
 
@@ -73,6 +74,8 @@ BepInEx/
 .\build.ps1 -BootOnly                        # 只更新壳
 .\build.ps1 -GameDir                         # 指定游戏目录
 ```
+
+`HotReload-KKS\build.ps1` 会把同一份 payload 同时部署到已知的两个 KKS 安装（`KoikatuSunshine`、`Koikatsu Sunshine EX BetterRepack R12`）。
 
 ---
 

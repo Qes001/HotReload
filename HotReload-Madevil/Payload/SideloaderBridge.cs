@@ -40,7 +40,8 @@ namespace HotReload.Payload
 
         // ---- 游戏启动后补扫新 zipmod 用 ----
         static PropertyInfo _modsDirProp;              // static string ModsDirectory
-        static FieldInfo _additionalModsDirField;      // ConfigEntry<string> AdditionalModsDirectory
+        static FieldInfo _additionalModsDirField;      // ConfigEntry<string> AdditionalModsDirectory（旧版是字段）
+        static PropertyInfo _additionalModsDirProp;    // 新版是属性
         static MethodInfo _buildPngFolderList;
         static MethodInfo _buildPngOnlyFolderList;
 
@@ -124,6 +125,7 @@ namespace HotReload.Payload
             _zipArchivesField = _sideloaderType.GetField("ZipArchives", any | BindingFlags.Static);
             _modsDirProp = _sideloaderType.GetProperty("ModsDirectory", any | BindingFlags.Static);
             _additionalModsDirField = _sideloaderType.GetField("AdditionalModsDirectory", any | BindingFlags.Static);
+            _additionalModsDirProp = _sideloaderType.GetProperty("AdditionalModsDirectory", any | BindingFlags.Static);
             _buildPngFolderList = _sideloaderType.GetMethod("BuildPngFolderList", any | BindingFlags.Instance);
             _buildPngOnlyFolderList = _sideloaderType.GetMethod("BuildPngOnlyFolderList",
                 any | BindingFlags.Instance, null, Type.EmptyTypes, null);
@@ -649,17 +651,17 @@ namespace HotReload.Payload
 
             try
             {
-                if (_additionalModsDirField != null)
-                {
-                    var entry = _additionalModsDirField.GetValue(null);
-                    var valueProp = entry == null ? null : entry.GetType().GetProperty("Value");
-                    var raw = valueProp == null ? null : valueProp.GetValue(entry, null) as string;
+                object entry = null;
+                if (_additionalModsDirField != null) entry = _additionalModsDirField.GetValue(null);
+                else if (_additionalModsDirProp != null) entry = _additionalModsDirProp.GetValue(null, null);
 
-                    if (!string.IsNullOrEmpty(raw))
-                    {
-                        var parts = raw.Split(new[] { ';', '|' }, StringSplitOptions.RemoveEmptyEntries);
-                        for (int i = 0; i < parts.Length; i++) AddRootDirectory(dirs, parts[i].Trim());
-                    }
+                var valueProp = entry == null ? null : entry.GetType().GetProperty("Value");
+                var raw = valueProp == null ? null : valueProp.GetValue(entry, null) as string;
+
+                if (!string.IsNullOrEmpty(raw))
+                {
+                    var parts = raw.Split(new[] { ';', '|' }, StringSplitOptions.RemoveEmptyEntries);
+                    for (int i = 0; i < parts.Length; i++) AddRootDirectory(dirs, parts[i].Trim());
                 }
             }
             catch (Exception)

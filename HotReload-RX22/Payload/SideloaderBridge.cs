@@ -68,7 +68,8 @@ namespace HotReload.Payload
 
         // ---- 游戏启动后补扫新 zipmod 用 ----
         static PropertyInfo _modsDirProp;              // static string ModsDirectory
-        static FieldInfo _additionalModsDirField;      // ConfigEntry<string> AdditionalModsDirectory
+        static FieldInfo _additionalModsDirField;      // ConfigEntry<string> AdditionalModsDirectory（旧版是字段）
+        static PropertyInfo _additionalModsDirProp;    // 新版是属性
         static MethodInfo _buildPngOnlyFolderList;
 
         // ---- 表格/manifest 真正刷新要用的入口（Sideloader 自己的列表与 AutoResolver 解析表）----
@@ -138,6 +139,7 @@ namespace HotReload.Payload
             _zipArchivesField = _sideloaderType.GetField("ZipArchives", AnyStatic);
             _modsDirProp = _sideloaderType.GetProperty("ModsDirectory", AnyStatic);
             _additionalModsDirField = _sideloaderType.GetField("AdditionalModsDirectory", AnyStatic);
+            _additionalModsDirProp = _sideloaderType.GetProperty("AdditionalModsDirectory", AnyStatic);
             _buildPngOnlyFolderList = _sideloaderType.GetMethod("BuildPngOnlyFolderList",
                 AnyStatic | BindingFlags.Instance, null, Type.EmptyTypes, null);
 
@@ -703,17 +705,17 @@ namespace HotReload.Payload
 
             try
             {
-                if (_additionalModsDirField != null)
-                {
-                    var entry = _additionalModsDirField.GetValue(null);
-                    var valueProp = entry == null ? null : entry.GetType().GetProperty("Value");
-                    var raw = valueProp == null ? null : valueProp.GetValue(entry, null) as string;
+                object entry = null;
+                if (_additionalModsDirField != null) entry = _additionalModsDirField.GetValue(null);
+                else if (_additionalModsDirProp != null) entry = _additionalModsDirProp.GetValue(null, null);
 
-                    if (!string.IsNullOrEmpty(raw))
-                    {
-                        var parts = raw.Split(new[] { ';', '|' }, StringSplitOptions.RemoveEmptyEntries);
-                        for (int i = 0; i < parts.Length; i++) AddRootDirectory(dirs, parts[i].Trim());
-                    }
+                var valueProp = entry == null ? null : entry.GetType().GetProperty("Value");
+                var raw = valueProp == null ? null : valueProp.GetValue(entry, null) as string;
+
+                if (!string.IsNullOrEmpty(raw))
+                {
+                    var parts = raw.Split(new[] { ';', '|' }, StringSplitOptions.RemoveEmptyEntries);
+                    for (int i = 0; i < parts.Length; i++) AddRootDirectory(dirs, parts[i].Trim());
                 }
             }
             catch (Exception)
