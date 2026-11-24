@@ -20,7 +20,7 @@ namespace HotReload.Boot
     /// 职责：撤掉旧补丁 -> 让旧 payload 自我清理 -> 从磁盘读字节加载新 payload -> 调用 OnLoad。
     /// 不引用 Payload 工程，两边只靠类型名 + 静态方法签名约定。
     /// </summary>
-    [BepInPlugin(Guid, "HotReload Boot", "1.2.3")]
+    [BepInPlugin(Guid, "HotReload Boot", "1.2.4")]
     public class Boot : BaseUnityPlugin
     {
         public const string Guid = "as-sin.hotreload.boot";

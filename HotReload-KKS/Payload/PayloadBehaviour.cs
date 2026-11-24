@@ -1,5 +1,5 @@
 ﻿// SPDX-License-Identifier: GPL-3.0-only
-// HotReload - Koikatsu / Koikatsu Sunshine runtime zipmod hot reload
+// HotReload - Koikatu runtime zipmod hot reload
 // Copyright (C) 2026 As-sin
 //
 // This program is free software: you can redistribute it and/or modify
@@ -40,6 +40,9 @@ namespace HotReload.Payload
         HotkeyAction _captureTarget;
         Vector2 _settingsScroll;
 
+        // 刚录完键的那一帧不响应，免得同一个按键顺手把动作也触发了
+        int _suppressFrame = -1;
+
         GUIStyle _windowStyle, _titleStyle, _labelStyle, _hintStyle, _boxStyle, _smallStyle, _buttonStyle, _fieldStyle,
             _toggleStyle;
         Texture2D _texWindow, _texBox, _texButton, _texButtonHover, _texButtonActive, _texField;
@@ -55,7 +58,8 @@ namespace HotReload.Payload
             // Sideloader 可能比本插件晚加载，这里持续重试桥接
             ContentHotReload.Tick();
 
-            if (HotkeyConfig.Get(HotkeyAction.ToggleWindow).IsDown())
+            // 录键过程中连窗口开关也不响应，否则按到 Ctrl+F7 会把窗口关掉
+            if (!_capturing && HotkeyConfig.Get(HotkeyAction.ToggleWindow).IsDown())
             {
                 _visible = !_visible;
                 _guiErrorReported = false;
@@ -73,8 +77,10 @@ namespace HotReload.Payload
 
             if (!_visible) return;
 
-            // 录键中或正在文本框输入时不抢键
+            // 录键中、设置页里、正在文本框输入，或者刚录完的那一帧，都不响应快捷键
             if (_capturing) return;
+            if (_page != 0) return;
+            if (Time.frameCount <= _suppressFrame) return;
             if (GUIUtility.keyboardControl != 0) return;
 
             HandleHotkeys();
@@ -164,13 +170,17 @@ namespace HotReload.Payload
 
             HotkeyConfig.Set(_captureTarget, new Hotkey(ev.keyCode, ev.control, ev.alt, ev.shift));
             _capturing = false;
+            _suppressFrame = Time.frameCount + 1;
+
+            // 别让刚按的键继续落在输入框/按钮上
+            GUIUtility.keyboardControl = 0;
         }
 
         void DrawWindow(int id)
         {
             // ---------- 标题栏 ----------
             var titleRect = new Rect(1f, 1f, _rect.width - 2f, TitleHeight);
-            GUI.Label(titleRect, "HotReload  热重载  <size=10><color=#9aa0a6>v1.2.3 by Qes001</color></size>", _titleStyle);
+            GUI.Label(titleRect, "HotReload  热重载  <size=10><color=#9aa0a6>v1.2.4 by Qes001</color></size>", _titleStyle);
 
             if (GUI.Button(new Rect(_rect.width - 50f, 4f, 20f, 18f), _collapsed ? "+" : "-", _smallStyle))
             {
@@ -291,7 +301,7 @@ namespace HotReload.Payload
 
         void DrawSettings()
         {
-            GUILayout.Label("点「改键」后按想要的组合键（Esc 取消），「默认/清除」恢复初始状态。快捷键只在窗口打开时生效。", _labelStyle);
+            GUILayout.Label("点「改键」后按想要的组合键（Esc 取消），「默认/清除」恢复初始状态。快捷键只在主界面、窗口打开时生效，本页内不响应。", _labelStyle);
             GUILayout.Space(4f);
             GUILayout.Label("开关窗口 / payload 重载 出厂就带默认键，其余默认不绑定，都可自行修改。", _labelStyle);
             GUILayout.Space(6f);
