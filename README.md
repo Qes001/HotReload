@@ -95,3 +95,48 @@ BepInEx/
 GPL-3.0-only，完整条款见 [LICENSE](LICENSE)。
 
 实现思路参考 BepisPlugins 的 Sideloader 热重载分支（LGPL-3.0），未直接包含其源码。
+
+---
+
+## 更新记录
+
+完整说明与附件见 [Releases](https://github.com/Qes001/HotReload/releases)。
+
+### v1.2.4（2026-11-24）
+
+- 修复：在「设置」页里按键不再触发已绑定的动作（之前会真的执行释放 / 重载 / 检索并刷日志）
+- 修复：录键过程中窗口开关不响应，避免按到 `Ctrl+F7` 把窗口关掉
+- 修复：录完键的当帧与下一帧做抑制，同一次按键不会顺手触发动作
+
+### v1.2.3（2026-11-24）
+
+- 新增：快捷键设置界面（操作行「设置」），可为 7 个动作绑键
+- 开关窗口（`Ctrl+F7`）、payload 重载（`Ctrl+F10`）为默认值，**可自行修改**；其余动作默认不绑定
+- 壳（Boot）改为从 `BepInEx/hotreload/hotkeys.txt` 读取 payload 重载键
+- 操作行顺序：`释放` `重载` `检索` `清空` `导出` `设置`
+
+### v1.2.2（2026-11-24）
+
+- 新增：Koikatsu Sunshine 支持（`HotReload-KKS`，Sideloader 19.6 / 20.0 通用）
+- 修复：「检索」漏扫额外 mod 目录（`AdditionalModsDirectory` 是属性而非字段）
+- 变更：窗口标题署名改为 `by Qes001`
+
+### v1.2.1（2026-11-24）
+
+- 新增：「检索」按钮，游戏启动后新增的 zipmod 免重启注册
+- 新增：启动基线 `zipmods-seen.txt`，只处理本次启动之后新增的包，自动跳过同 guid 的旧版本
+- 修复：桥接初始化失败（HotReload 排在 Sideloader 之前加载时报「找不到 Sideloader.Sideloader」），改为惰性重试
+- 修复：重载 / 检索总会刷新 `ZipArchives`（guid → 包路径）索引
+
+### v1.2（2026-10-26）
+
+- 表格/manifest 真正刷新：先删旧条目再按新数据补回（`Lists.LoadList` 只补缺不覆盖）
+- 复用上次分配的 `LocalSlot`，重建 AutoResolver 的 `ResolveInfo`
+- 替换 `Lists.ExternalDataList`，捏人界面重建列表才能看到新项
+- manifest 改用非公开反射 `TryLoadFromZip` 解析
+- 饰品列表逐项刷新，重载后跳一帧再刷一次
+- 「表格/manifest」勾选状态存 `options.txt`
+
+### v1.1 / v1.0.0
+
+- 早期版本：释放 → 覆盖 unity3d → 重载 的基本流程，KK 首发
