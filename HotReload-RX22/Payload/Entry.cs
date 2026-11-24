@@ -33,10 +33,15 @@ namespace HotReload.Payload
             _root = new GameObject("HotReload.Payload");
             UnityEngine.Object.DontDestroyOnLoad(_root);
             _root.AddComponent<PayloadBehaviour>();
+
+            // HTTP 接口：Python 等外部脚本可以免点击触发释放 / 重载 / 检索
+            ApiServer.Start();
         }
 
         public static void OnUnload()
         {
+            ApiServer.Stop();
+
             if (_root != null) UnityEngine.Object.Destroy(_root);
             _root = null;
         }

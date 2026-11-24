@@ -59,6 +59,42 @@ BepInEx/
 
 ---
 
+## HTTP 接口
+
+三个版本（Madevil / RX22 / KKS）v1.3.0 起都带一个本机 HTTP 接口，Python 等外部脚本可以免点击触发释放 / 重载 / 检索，并直接拿到执行结果。
+
+**默认关闭**。打开方式：`Ctrl+F7` 开窗口 →「设置」→ 勾上「接口开关」，立刻生效（状态在右侧显示「运行中 · 端口 8712」），选择会写回 `BepInEx/hotreload/api.txt`。
+
+- 只监听 `127.0.0.1:8712`，配置在 `BepInEx/hotreload/api.txt`（`enabled=0` 关、`port` 改端口、`token` 非空时请求要带 `&token=...`）
+- 请求丢回主线程执行，执行完才返回，动作超时 30 秒
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /status` | 版本、桥接状态、`activeZips`（已释放、可覆盖的包）、接口列表 |
+| `GET /log?limit=100` | 最近若干条日志 |
+| `GET /hotkeys` | 当前快捷键绑定 |
+| `/release?guid=a,b` | 释放指定 guid（空格 / 逗号分隔），之后就能覆盖 zipmod |
+| `/reload` | 重载已释放的包 |
+| `/rescan` | 检索启动后新增的 zipmod |
+| `/clear` / `/export` | 清空 / 导出日志 |
+| `/hotkey?action=release&key=F5&ctrl=1` | 改键（`key` 省略即恢复默认/清除） |
+| `/options?reloadlists=1` | 开关「表格/manifest」 |
+
+除 `/status`、`/log`、`/hotkeys` 外的接口都返回 `{"ok":bool,"activeZips":[...],"log":[...]}`；这轮执行里出现 `[x]` 开头的日志就算失败。
+
+```python
+import json, urllib.request
+
+def api(path):
+    with urllib.request.urlopen("http://127.0.0.1:8712" + path, timeout=35) as r:
+        return json.load(r)
+
+api("/release?guid=author.mod")   # 释放 → 覆盖 zipmod 里的 unity3d
+print(api("/reload"))             # {"ok": true, "activeZips": [...], "log": [...]}
+```
+
+---
+
 ## 原理
 
 - **释放**：摘注册表 → 卸加载器 → 关 zip 句柄
@@ -101,6 +137,12 @@ GPL-3.0-only，完整条款见 [LICENSE](LICENSE)。
 ## 更新记录
 
 完整说明与附件见 [Releases](https://github.com/Qes001/HotReload/releases)。
+
+### v1.3.0（2026-11-24）
+
+- 新增：本机 HTTP 接口（`127.0.0.1:8712`），外部脚本可免点击触发释放 / 重载 / 检索 / 改键，返回 `ok` / `activeZips` / `log`
+- 接口**默认关闭**，可在「设置」里勾选「接口开关」随时启停，选择写回 `BepInEx/hotreload/api.txt`（也可在那里改端口、设 token）
+- 新增：交付的 `activeZips` 供脚本判断哪些包已经释放、可以覆盖
 
 ### v1.2.4（2026-11-24）
 

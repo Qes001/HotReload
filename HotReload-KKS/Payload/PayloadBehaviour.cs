@@ -43,6 +43,9 @@ namespace HotReload.Payload
         // 刚录完键的那一帧不响应，免得同一个按键顺手把动作也触发了
         int _suppressFrame = -1;
 
+        // 「设置」页点了接口开关，留到 Update 里启停（-1 无，0 关，1 开）
+        int _apiToggle = -1;
+
         GUIStyle _windowStyle, _titleStyle, _labelStyle, _hintStyle, _boxStyle, _smallStyle, _buttonStyle, _fieldStyle,
             _toggleStyle;
         Texture2D _texWindow, _texBox, _texButton, _texButtonHover, _texButtonActive, _texField;
@@ -55,6 +58,17 @@ namespace HotReload.Payload
 
         void Update()
         {
+            // HTTP 接口的请求排在这里，回到主线程执行
+            ApiServer.Pump();
+
+            // 「设置」页点的接口开关，放到主线程的 Update 里启停，不在 OnGUI 里碰套接字
+            if (_apiToggle >= 0)
+            {
+                bool apiOn = _apiToggle == 1;
+                _apiToggle = -1;
+                ApiServer.SetEnabled(apiOn);
+            }
+
             // Sideloader 可能比本插件晚加载，这里持续重试桥接
             ContentHotReload.Tick();
 
@@ -180,7 +194,7 @@ namespace HotReload.Payload
         {
             // ---------- 标题栏 ----------
             var titleRect = new Rect(1f, 1f, _rect.width - 2f, TitleHeight);
-            GUI.Label(titleRect, "HotReload  热重载  <size=10><color=#9aa0a6>v1.2.4 by Qes001</color></size>", _titleStyle);
+            GUI.Label(titleRect, "HotReload  热重载  <size=10><color=#9aa0a6>v1.3.0 by Qes001</color></size>", _titleStyle);
 
             if (GUI.Button(new Rect(_rect.width - 50f, 4f, 20f, 18f), _collapsed ? "+" : "-", _smallStyle))
             {
@@ -351,8 +365,26 @@ namespace HotReload.Payload
                 GUILayout.EndHorizontal();
             }
 
+            GUILayout.Space(10f);
+            GUILayout.Label("HTTP 接口：给 Python 等外部脚本用，只监听 127.0.0.1，默认关闭。", _labelStyle);
+            GUILayout.Space(2f);
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("接口开关", _hintStyle, GUILayout.Width(84f));
+
+            bool apiOn = GUILayout.Toggle(ApiServer.Enabled, " 开启", _toggleStyle, GUILayout.Height(20f));
+            if (apiOn != ApiServer.Enabled) _apiToggle = apiOn ? 1 : 0;
+
+            string apiState;
+            if (!ApiServer.Enabled) apiState = "已关闭";
+            else if (ApiServer.IsRunning) apiState = "运行中 · 端口 " + ApiServer.Port;
+            else apiState = "启动失败，端口可能被占用";
+
+            GUILayout.Label(apiState, _labelStyle, GUILayout.ExpandWidth(true));
+            GUILayout.EndHorizontal();
+
             GUILayout.Space(8f);
-            GUILayout.Label("配置写在 BepInEx/hotreload/hotkeys.txt，删掉该文件即恢复初始状态。", _labelStyle);
+            GUILayout.Label("配置写在 BepInEx/hotreload/hotkeys.txt 与 api.txt，删掉即恢复初始状态。", _labelStyle);
         }
 
         void EnsureStyle()

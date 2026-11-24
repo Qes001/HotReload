@@ -39,6 +39,9 @@ namespace HotReload.Payload
         public static List<string> Logs { get { return _logs; } }
         public static int LogCount { get { return _logs.Count; } }
 
+        /// <summary>已经释放（文件可覆盖）的包路径，给 HTTP 接口用。</summary>
+        public static string[] ActiveZips { get { return _activeZips.ToArray(); } }
+
         /// <summary>由 PayloadBehaviour 注入，用来跑延迟恢复用的协程。</summary>
         public static Func<IEnumerator, Coroutine> CoroutineStarter;
 
