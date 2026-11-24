@@ -46,6 +46,9 @@ namespace HotReload.Payload
 
         void Update()
         {
+            // Sideloader 可能比本插件晚加载，这里持续重试桥接
+            ContentHotReload.Tick();
+
             if (Input.GetKey(KeyCode.LeftControl) && Input.GetKeyDown(KeyCode.F7))
             {
                 _visible = !_visible;
@@ -110,7 +113,7 @@ namespace HotReload.Payload
         {
             // ---------- 标题栏 ----------
             var titleRect = new Rect(1f, 1f, _rect.width - 2f, TitleHeight);
-            GUI.Label(titleRect, "HotReload  热重载  <size=10><color=#9aa0a6>v1.0.0 by As-sin</color></size>", _titleStyle);
+            GUI.Label(titleRect, "HotReload  热重载  <size=10><color=#9aa0a6>v1.2.1 by As-sin</color></size>", _titleStyle);
 
             if (GUI.Button(new Rect(_rect.width - 50f, 4f, 20f, 18f), _collapsed ? "+" : "-", _smallStyle))
             {
@@ -173,16 +176,18 @@ namespace HotReload.Payload
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("操作", _hintStyle, GUILayout.Width(56f));
                 GUILayout.FlexibleSpace();
-                if (GUILayout.Button("释放", _buttonStyle, GUILayout.Width(72f), GUILayout.Height(26f)))
+                if (GUILayout.Button("检索", _buttonStyle, GUILayout.Width(58f), GUILayout.Height(26f)))
+                    ContentHotReload.Rescan();
+                if (GUILayout.Button("释放", _buttonStyle, GUILayout.Width(58f), GUILayout.Height(26f)))
                     ContentHotReload.Release(_guidText);
-                if (GUILayout.Button("重载", _buttonStyle, GUILayout.Width(72f), GUILayout.Height(26f)))
+                if (GUILayout.Button("重载", _buttonStyle, GUILayout.Width(58f), GUILayout.Height(26f)))
                     ContentHotReload.Reload();
-                if (GUILayout.Button("清空", _buttonStyle, GUILayout.Width(72f), GUILayout.Height(26f)))
+                if (GUILayout.Button("清空", _buttonStyle, GUILayout.Width(58f), GUILayout.Height(26f)))
                 {
                     ContentHotReload.ClearLog();
                     _lastLogCount = 0;
                 }
-                if (GUILayout.Button("导出", _buttonStyle, GUILayout.Width(72f), GUILayout.Height(26f)))
+                if (GUILayout.Button("导出", _buttonStyle, GUILayout.Width(58f), GUILayout.Height(26f)))
                     ContentHotReload.ExportLog();
                 GUILayout.EndHorizontal();
 

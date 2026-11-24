@@ -66,6 +66,11 @@ namespace HotReload.Payload
         static MethodInfo _buildPngFolderList;
         static MethodInfo _loadList;
 
+        // ---- 游戏启动后补扫新 zipmod 用 ----
+        static PropertyInfo _modsDirProp;              // static string ModsDirectory
+        static FieldInfo _additionalModsDirField;      // ConfigEntry<string> AdditionalModsDirectory
+        static MethodInfo _buildPngOnlyFolderList;
+
         // ---- 表格/manifest 真正刷新要用的入口（Sideloader 自己的列表与 AutoResolver 解析表）----
         static FieldInfo _loadedManifestsField;
         static FieldInfo _dictListInfoField;          // ChaListControl.dictListInfo
@@ -92,6 +97,32 @@ namespace HotReload.Payload
             Available = false;
             LastError = null;
 
+            try
+            {
+                InitializeCore();
+            }
+            catch (Exception e)
+            {
+                Available = false;
+                LastError = "反射探测异常: " + (e.InnerException != null ? e.InnerException : e).Message;
+            }
+        }
+
+        /// <summary>
+        /// BepInEx 按文件系统顺序装载插件，HotReload 壳经常排在 Sideloader 前面：
+        /// 那时 Sideloader.dll 还没进 AppDomain，类型和实例都查不到，启动时初始化必然失败
+        /// （日志里就是 "找不到 Sideloader.Sideloader"，但 Sideloader 下一秒才加载）。
+        /// 所以失败不当致命错误，由界面每帧重试，直到 Sideloader 载入为止。
+        /// </summary>
+        public static bool EnsureInitialized()
+        {
+            if (Available) return true;
+            Initialize();
+            return Available;
+        }
+
+        static void InitializeCore()
+        {
             _sideloaderType = FindType("Sideloader.Sideloader");
             if (_sideloaderType == null) { LastError = "找不到 Sideloader.Sideloader"; return; }
 
@@ -105,6 +136,10 @@ namespace HotReload.Payload
             _pngListField = _sideloaderType.GetField("PngList", AnyStatic);
             _manifestsField = _sideloaderType.GetField("Manifests", AnyStatic);
             _zipArchivesField = _sideloaderType.GetField("ZipArchives", AnyStatic);
+            _modsDirProp = _sideloaderType.GetProperty("ModsDirectory", AnyStatic);
+            _additionalModsDirField = _sideloaderType.GetField("AdditionalModsDirectory", AnyStatic);
+            _buildPngOnlyFolderList = _sideloaderType.GetMethod("BuildPngOnlyFolderList",
+                AnyStatic | BindingFlags.Instance, null, Type.EmptyTypes, null);
 
             foreach (var kv in Chainloader.PluginInfos)
             {
@@ -317,6 +352,418 @@ namespace HotReload.Payload
             try { _zipmodDispose.Invoke(info, null); } catch (Exception) { }
         }
 
+        // ---------------------------------------------------------------- 检索新增 zipmod
+
+        // ---- 检索基线：启动时磁盘上已有的包，检索时一律跳过 ----
+        static HashSet<string> _seen;
+
+        static string BaselinePath
+        {
+            get
+            {
+                try { return Path.Combine(Path.Combine(BepInEx.Paths.BepInExRootPath, "hotreload"), "zipmods-seen.txt"); }
+                catch (Exception) { return null; }
+            }
+        }
+
+        /// <summary>
+        /// 桥接就绪时调一次：把磁盘上现有的 zipmod 全记成基线。
+        /// 这些包 Sideloader 启动时都处理过了——包括它按"同 guid 多版本只载最新"主动跳过的那些。
+        /// 只拿"已注册"当参照的话，那几十个被跳过的旧版本会被当成新包重新注册（还白白抽一遍 bundle）。
+        /// </summary>
+        public static void RefreshBaseline()
+        {
+            if (!Available) return;
+
+            try
+            {
+                var seen = LoadBaseline();
+                var dirs = CollectModDirectories();
+
+                for (int i = 0; i < dirs.Count; i++)
+                {
+                    try
+                    {
+                        if (!Directory.Exists(dirs[i])) continue;
+
+                        var files = Directory.GetFiles(dirs[i], "*", SearchOption.AllDirectories);
+                        for (int k = 0; k < files.Length; k++)
+                        {
+                            if (!IsZipmodFile(files[k])) continue;
+                            var path = SafeFullPath(files[k]);
+                            if (path != null) seen.Add(path);
+                        }
+                    }
+                    catch (Exception)
+                    {
+                    }
+                }
+
+                SaveBaseline(seen);
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        static HashSet<string> LoadBaseline()
+        {
+            if (_seen != null) return _seen;
+
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var path = BaselinePath;
+                if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                {
+                    var lines = File.ReadAllLines(path);
+                    for (int i = 0; i < lines.Length; i++)
+                    {
+                        var line = lines[i].Trim();
+                        if (line.Length > 0) set.Add(line);
+                    }
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            _seen = set;
+            return set;
+        }
+
+        static void SaveBaseline(HashSet<string> set)
+        {
+            _seen = set;
+            try
+            {
+                var path = BaselinePath;
+                if (string.IsNullOrEmpty(path)) return;
+
+                var dir = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+                var lines = new string[set.Count];
+                set.CopyTo(lines);
+                Array.Sort(lines, StringComparer.OrdinalIgnoreCase);
+                File.WriteAllLines(path, lines);
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        /// <summary>
+        /// 游戏启动后再往 mods 目录里扔 zipmod，Sideloader 自己不会去发现。
+        /// 这里只处理基线之外的文件（= 这次启动之后才出现的），按"重载"的流程装进去。
+        /// </summary>
+        public static string RescanNewArchives(object chaListControl, out int added)
+        {
+            added = 0;
+            if (!Available) return "桥接不可用: " + LastError;
+
+            var dirs = CollectModDirectories();
+            if (dirs.Count == 0) return "没找到 zipmod 目录（Sideloader.ModsDirectory 读不到）";
+
+            var seen = LoadBaseline();
+            var registered = CollectRegisteredPaths();
+            var registeredGuids = CollectRegisteredGuids();
+            var fresh = new List<string>();
+            int dupes = 0;
+
+            for (int i = 0; i < dirs.Count; i++)
+            {
+                try
+                {
+                    if (!Directory.Exists(dirs[i])) continue;
+
+                    var files = Directory.GetFiles(dirs[i], "*", SearchOption.AllDirectories);
+                    for (int k = 0; k < files.Length; k++)
+                    {
+                        if (!IsZipmodFile(files[k])) continue;
+                        var path = SafeFullPath(files[k]);
+                        if (path == null) continue;
+                        if (seen.Contains(path) || registered.Contains(path) || fresh.Contains(path)) continue;
+
+                        // 会话中新加的"另一个版本"：guid 已注册就别再装一遍
+                        var guid = PeekManifestGuid(path);
+                        if (!string.IsNullOrEmpty(guid) && registeredGuids.Contains(guid))
+                        {
+                            seen.Add(path);
+                            dupes++;
+                            continue;
+                        }
+
+                        fresh.Add(path);
+                    }
+                }
+                catch (Exception)
+                {
+                    // 单个目录没权限就跳过，别把整次检索废掉
+                }
+            }
+
+            if (fresh.Count == 0)
+            {
+                if (dupes > 0) SaveBaseline(seen);
+                return "没有发现新的 zipmod（扫了 " + dirs.Count + " 个目录" + DupesText(dupes) + "）";
+            }
+
+            // 基线丢了（比如删了 hotreload 目录）时，别一口气把几千个包全注册进去
+            const int MaxPerRun = 200;
+            if (fresh.Count > MaxPerRun)
+                return "有 " + fresh.Count + " 个包不在基线里，疑似扫描记录丢失：重启一次游戏（启动时会重建基线）再检索";
+
+            fresh.Sort(StringComparer.OrdinalIgnoreCase);
+
+            int ok = 0;
+            int failed = 0;
+            string firstError = null;
+
+            for (int i = 0; i < fresh.Count; i++)
+            {
+                string report;
+                try { report = ReloadArchive(fresh[i], chaListControl, true); }
+                catch (Exception e) { report = "失败: " + Unwrap(e).Message; }
+
+                if (report != null && report.StartsWith("失败", StringComparison.Ordinal))
+                {
+                    failed++;
+                    if (firstError == null) firstError = Path.GetFileName(fresh[i]) + " -> " + report;
+                    continue;   // 失败的不记基线，修好后还能再检索
+                }
+
+                seen.Add(fresh[i]);
+                ok++;
+            }
+
+            SaveBaseline(seen);
+            added = ok;
+
+            if (_buildPngOnlyFolderList != null)
+            {
+                try { _buildPngOnlyFolderList.Invoke(_instance, null); } catch (Exception) { }
+            }
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append("扫描 ").Append(dirs.Count).Append(" 个目录，新包 ").Append(fresh.Count)
+                .Append("，成功 ").Append(ok);
+            if (failed > 0) sb.Append("，失败 ").Append(failed);
+            sb.Append(DupesText(dupes));
+            if (firstError != null) sb.Append("；首个失败: ").Append(firstError);
+            return sb.ToString();
+        }
+
+        static string DupesText(int dupes)
+        {
+            return dupes > 0 ? "，跳过同 guid 旧版本 " + dupes + " 个" : "";
+        }
+
+        static bool IsZipmodFile(string path)
+        {
+            return path.EndsWith(".zipmod", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>已经注册过的包（换成绝对路径，方便和磁盘上的文件比对）。</summary>
+        static HashSet<string> CollectRegisteredPaths()
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                var map = _zipmodsField == null ? null : _zipmodsField.GetValue(null) as IDictionary;
+                if (map != null)
+                {
+                    foreach (DictionaryEntry e in map)
+                    {
+                        var p = SafeFullPath(GetZipmodFileName(e.Value));
+                        if (!string.IsNullOrEmpty(p)) set.Add(p);
+                    }
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            try
+            {
+                var map = _zipArchivesField == null ? null : _zipArchivesField.GetValue(null) as IDictionary;
+                if (map != null)
+                {
+                    foreach (DictionaryEntry e in map)
+                    {
+                        var p = SafeFullPath(e.Value as string);
+                        if (!string.IsNullOrEmpty(p)) set.Add(p);
+                    }
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            return set;
+        }
+
+        /// <summary>已经注册过的 guid（Manifests / ZipArchives 的键，以及每个 ZipmodInfo 自己的 manifest）。</summary>
+        static HashSet<string> CollectRegisteredGuids()
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                var manifests = _manifestsField == null ? null : _manifestsField.GetValue(null) as IDictionary;
+                if (manifests != null)
+                {
+                    foreach (DictionaryEntry e in manifests)
+                    {
+                        var guid = e.Key as string;
+                        if (!string.IsNullOrEmpty(guid)) set.Add(guid);
+                    }
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            try
+            {
+                var map = _zipArchivesField == null ? null : _zipArchivesField.GetValue(null) as IDictionary;
+                if (map != null)
+                {
+                    foreach (DictionaryEntry e in map)
+                    {
+                        var guid = e.Key as string;
+                        if (!string.IsNullOrEmpty(guid)) set.Add(guid);
+                    }
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            try
+            {
+                var zipmods = _zipmodsField == null ? null : _zipmodsField.GetValue(null) as IDictionary;
+                if (zipmods != null)
+                {
+                    foreach (DictionaryEntry e in zipmods)
+                    {
+                        var info = e.Value;
+                        if (info == null || _zipmodManifestField == null) continue;
+                        var guid = GetGuid(_zipmodManifestField.GetValue(info));
+                        if (!string.IsNullOrEmpty(guid)) set.Add(guid);
+                    }
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            return set;
+        }
+
+        /// <summary>只读一下包里的 manifest 拿 guid，不注册任何东西。</summary>
+        static string PeekManifestGuid(string zipPath)
+        {
+            object info = null;
+            try
+            {
+                if (_zipmodCtor == null || _zipmodGetZipFile == null || _manifestLoadFromZip == null) return null;
+
+                info = _zipmodCtor.Invoke(new object[] { zipPath });
+                var zip = _zipmodGetZipFile.Invoke(info, null);
+                if (zip == null) return null;
+
+                return GetGuid(_manifestLoadFromZip.Invoke(null, new object[] { zip }));
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+            finally
+            {
+                if (info != null) DisposeZipmod(info);
+            }
+        }
+
+        /// <summary>要扫的目录：Sideloader 的 ModsDirectory + 额外目录（再兜底已注册包所在目录）。</summary>
+        static List<string> CollectModDirectories()
+        {
+            var dirs = new List<string>();
+
+            try
+            {
+                if (_modsDirProp != null)
+                    AddRootDirectory(dirs, _modsDirProp.GetValue(null, null) as string);
+            }
+            catch (Exception)
+            {
+            }
+
+            try
+            {
+                if (_additionalModsDirField != null)
+                {
+                    var entry = _additionalModsDirField.GetValue(null);
+                    var valueProp = entry == null ? null : entry.GetType().GetProperty("Value");
+                    var raw = valueProp == null ? null : valueProp.GetValue(entry, null) as string;
+
+                    if (!string.IsNullOrEmpty(raw))
+                    {
+                        var parts = raw.Split(new[] { ';', '|' }, StringSplitOptions.RemoveEmptyEntries);
+                        for (int i = 0; i < parts.Length; i++) AddRootDirectory(dirs, parts[i].Trim());
+                    }
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            // 兜底：已注册包所在的目录（有人把包放在别的自定义目录里）
+            try
+            {
+                var map = _zipmodsField == null ? null : _zipmodsField.GetValue(null) as IDictionary;
+                if (map != null)
+                {
+                    foreach (DictionaryEntry e in map)
+                    {
+                        var p = SafeFullPath(GetZipmodFileName(e.Value));
+                        if (string.IsNullOrEmpty(p)) continue;
+                        AddRootDirectory(dirs, Path.GetDirectoryName(p));
+                    }
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            return dirs;
+        }
+
+        /// <summary>
+        /// 只保留最外层目录：子目录会被父目录的递归扫描覆盖，
+        /// 上千个 zipmod 各自加一条会让检索变成 N 次全盘遍历。
+        /// </summary>
+        static void AddRootDirectory(List<string> dirs, string dir)
+        {
+            var full = SafeFullPath(dir);
+            if (string.IsNullOrEmpty(full)) return;
+
+            var trimmed = full.TrimEnd('\\', '/');
+
+            for (int i = dirs.Count - 1; i >= 0; i--)
+            {
+                var existing = dirs[i].TrimEnd('\\', '/');
+                if (string.Equals(existing, trimmed, StringComparison.OrdinalIgnoreCase)) return;
+
+                if (trimmed.StartsWith(existing + "\\", StringComparison.OrdinalIgnoreCase)) return;
+                if (existing.StartsWith(trimmed + "\\", StringComparison.OrdinalIgnoreCase)) dirs.RemoveAt(i);
+            }
+
+            dirs.Add(full);
+        }
+
         // ---------------------------------------------------------------- 重新装载
 
         /// <summary>重新打开 zip、重建 BundleInfos 并注册加载器，返回简报（不抛异常）。</summary>
@@ -427,6 +874,13 @@ namespace HotReload.Payload
                 var zipmodGuid = GetGuid(zipmodManifest);
                 var manifests = _manifestsField == null ? null : _manifestsField.GetValue(null) as IDictionary;
                 if (manifests != null && !string.IsNullOrEmpty(zipmodGuid)) manifests[zipmodGuid] = zipmodManifest;
+
+                // ZipArchives 是 guid -> 包路径，"释放"和游戏的缺失检测都靠它查包
+                if (_zipArchivesField != null && !string.IsNullOrEmpty(zipmodGuid))
+                {
+                    var archivesMap = _zipArchivesField.GetValue(null) as IDictionary;
+                    if (archivesMap != null) archivesMap[zipmodGuid] = fileName;
+                }
 
                 if (_zipmodLoadedField != null)
                 {

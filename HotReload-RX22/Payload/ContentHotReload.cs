@@ -28,6 +28,14 @@ namespace HotReload.Payload
 
         static object _chaListControl;
 
+        // 桥接初始化重试（Sideloader 比本插件晚加载时用）
+        static int _bridgeTries;
+        static float _nextBridgeTry;
+        const int BridgeMaxTries = 60;   // 0.2 秒一次，约 12 秒
+
+        // 启动基线是否已经记录（记录之后"检索"才知道哪些是后来才加的包）
+        static bool _baselineBuilt;
+
         public static List<string> Logs { get { return _logs; } }
         public static int LogCount { get { return _logs.Count; } }
 
@@ -40,11 +48,43 @@ namespace HotReload.Payload
 
             LoadOptions();
             SideloaderBridge.Initialize();
+
+            // Sideloader 可能比本插件晚加载：这时先不吭声，Tick() 会重试到成功再报"就绪"
+            if (SideloaderBridge.Available) SayReady();
+        }
+
+        /// <summary>
+        /// 每帧调一次：BepInEx 按文件系统顺序装载插件，HotReload 壳可能排在 Sideloader 前面，
+        /// 那时 AppDomain 里还没有 Sideloader 程序集，初始化必然失败。这里重试到它出现为止。
+        /// </summary>
+        public static void Tick()
+        {
             if (!SideloaderBridge.Available)
-                SayErr("Sideloader 桥接不可用: " + SideloaderBridge.LastError);
-            else
-                Say("就绪（" + SideloaderBridge.Capabilities + "）· build " + BuildStamp.Value
-                    + "。Ctrl+F7 开关窗口；填 guid -> 释放 -> 覆盖 unity3d -> 重载");
+            {
+                if (_bridgeTries >= BridgeMaxTries) return;
+
+                var now = Time.realtimeSinceStartup;
+                if (now < _nextBridgeTry) return;
+                _nextBridgeTry = now + 0.2f;
+                _bridgeTries++;
+
+                if (SideloaderBridge.EnsureInitialized())
+                    SayReady();
+                else if (_bridgeTries >= BridgeMaxTries)
+                    SayErr("Sideloader 桥接不可用: " + SideloaderBridge.LastError);
+                return;
+            }
+
+            // 就绪后的下一帧才记基线：几千个文件走一遍，别卡在启动里
+            if (_baselineBuilt) return;
+            _baselineBuilt = true;
+            SideloaderBridge.RefreshBaseline();
+        }
+
+        static void SayReady()
+        {
+            Say("就绪（" + SideloaderBridge.Capabilities + "）· build " + BuildStamp.Value
+                + "。Ctrl+F7 开关窗口；填 guid -> 释放 -> 覆盖 unity3d -> 重载");
         }
 
         public static void ClearLog()
@@ -72,7 +112,8 @@ namespace HotReload.Payload
 
         public static void Release(string guidText)
         {
-            if (!SideloaderBridge.Available) { SayErr("Sideloader 桥接不可用"); return; }
+            SideloaderBridge.EnsureInitialized();
+            if (!SideloaderBridge.Available) { SayErr("Sideloader 桥接不可用: " + SideloaderBridge.LastError); return; }
 
             var guids = SplitGuids(guidText);
             if (guids.Count == 0) { SayErr("请先输入 guid"); return; }
@@ -182,7 +223,8 @@ namespace HotReload.Payload
         {
             try
             {
-                if (!SideloaderBridge.Available) { SayErr("Sideloader 桥接不可用"); return; }
+                SideloaderBridge.EnsureInitialized();
+                if (!SideloaderBridge.Available) { SayErr("Sideloader 桥接不可用: " + SideloaderBridge.LastError); return; }
                 if (_activeZips.Count == 0) { SayErr("没有已释放的包，先点“释放”"); return; }
 
                 var targets = _activeZips.ToArray();
@@ -253,6 +295,47 @@ namespace HotReload.Payload
             {
                 // 任何异常都要落到日志里，否则界面上看起来就是"点了没反应"
                 SayErr("重载失败: " + e);
+            }
+        }
+
+        // ------------------------------------------------------------------ 检索新包
+
+        /// <summary>
+        /// 游戏启动之后再往 mods 目录里扔 zipmod，Sideloader 不会自己发现。
+        /// 重扫一遍它扫过的目录，把新增的包装进去（表格一起读，否则新衣服进不了分类列表）。
+        /// </summary>
+        public static void Rescan()
+        {
+            try
+            {
+                SideloaderBridge.EnsureInitialized();
+                if (!SideloaderBridge.Available) { SayErr("Sideloader 桥接不可用: " + SideloaderBridge.LastError); return; }
+
+                Say("开始检索新增 zipmod（新包会连表格一起注册）...");
+
+                var chaList = GetChaListControl();
+
+                int added;
+                var report = SideloaderBridge.RescanNewArchives(chaList, out added);
+
+                if (report != null && report.StartsWith("失败", StringComparison.Ordinal)) SayErr(report);
+                else Say(report);
+
+                if (added <= 0) return;
+
+                RefreshMakerUi();
+                if (CoroutineStarter != null)
+                {
+                    try { CoroutineStarter(RefreshMakerUiLater()); } catch (Exception) { }
+                }
+
+                Say("已加入 " + added + " 个新包，切一次分类就能看到新内容");
+                var prune = SideloaderBridge.PruneCache();
+                if (!string.IsNullOrEmpty(prune)) Say(prune);
+            }
+            catch (Exception e)
+            {
+                SayErr("检索失败: " + e);
             }
         }
 

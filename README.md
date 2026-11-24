@@ -50,6 +50,10 @@ BepInEx/
 
 **表格/manifest**：只有改了 `list/characustom/*.csv` 或 `manifest.xml` 才勾选。
 
+**检索**：游戏启动后才往 mods 目录里放的 zipmod，Sideloader 不会自己发现。点「检索」会重扫它扫过的目录（`ModsDirectory` + 额外目录），把**这次启动之后新增**的包连同表格一起注册，之后就能直接填它的 guid 用。
+
+启动时会记一份基线（`BepInEx/hotreload/zipmods-seen.txt`，记录磁盘上已有的包），检索只处理基线之外的文件——否则 Sideloader 因「同 guid 多版本只载最新」而跳过的旧版本会被当成新包重新注册。基线每次启动自动重建，删掉也没事（下次启动重来）。
+
 ---
 
 ## 原理
